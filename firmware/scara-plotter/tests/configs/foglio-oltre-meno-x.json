@@ -1,0 +1,63 @@
+{
+  "bracci_mm": {
+    "L1": 200,
+    "L2": 180
+  },
+  "ingombro_base_mm": 40,
+  "rotazione_montaggio_deg": 90,
+  "gomito": "pos",
+  "finecorsa_deg": {
+    "theta1": [
+      -135,
+      135
+    ],
+    "theta2": [
+      -150,
+      150
+    ]
+  },
+  "margine_finecorsa_deg": 5,
+  "angolo_minimo_gomito_deg": 10,
+  "foglio": {
+    "formato": "A5",
+    "larghezza_mm": 210,
+    "altezza_mm": 148,
+    "centro_mm": [
+      -60,
+      230
+    ],
+    "rotazione_deg": -90
+  },
+  "hardware": {
+    "driver": "A4988",
+    "passi_motore": 200,
+    "microstep": 16,
+    "rapporto_spalla": 5.0,
+    "rapporto_gomito": 5.0,
+    "motore_gomito": "base",
+    "inverti_direzione": {
+      "spalla": false,
+      "gomito": false
+    },
+    "homing": {
+      "spalla": "min",
+      "gomito": "min",
+      "posa": {
+        "theta1": -135,
+        "theta2": 105
+      }
+    },
+    "finecorsa_normalmente_chiusi": true,
+    "finecorsa_massimo_attivo": true,
+    "velocita_max_giunto_deg_s": 90,
+    "accelerazione_giunto_deg_s2": 300,
+    "accelerazione_disegno_mm_s2": 500,
+    "velocita_homing_deg_s": 20,
+    "segmenti_al_secondo": 100,
+    "seriale": {
+      "usb_baud": 115200,
+      "esp32_porta": 1,
+      "esp32_baud": 115200
+    }
+  }
+}

@@ -1,0 +1,202 @@
+diff --git a/Marlin/src/gcode/calibrate/G28.cpp b/Marlin/src/gcode/calibrate/G28.cpp
+index c345343..cccc36f 100644
+--- a/Marlin/src/gcode/calibrate/G28.cpp
++++ b/Marlin/src/gcode/calibrate/G28.cpp
+@@ -369,6 +369,12 @@ void GcodeSuite::G28() {
+ 
+     home_TPARA();
+ 
++  #elif ALL(MORGAN_SCARA, SCARA_JOINT_HOMING)
++
++    constexpr bool doZ = true;
++
++    home_SCARA();
++
+   #else
+ 
+     #define _UNSAFE(A) (homeZ && TERN0(Z_SAFE_HOMING, axes_should_home(_BV(A##_AXIS))))
+diff --git a/Marlin/src/module/motion.cpp b/Marlin/src/module/motion.cpp
+index 0ff5db4..80f604a 100644
+--- a/Marlin/src/module/motion.cpp
++++ b/Marlin/src/module/motion.cpp
+@@ -930,6 +930,14 @@ void restore_feedrate_and_scaling() {
+       #if ENABLED(POLARGRAPH)
+         LIMIT(target.x, draw_area_min.x, draw_area_max.x);
+         LIMIT(target.y, draw_area_min.y, draw_area_max.y);
++      #elif ALL(MORGAN_SCARA, SCARA_JOINT_HOMING)
++        // Plotter: the work area is a rectangle (the paper). Stock Marlin clamps to a
++        // circle whose radius is never initialized when software endstops are on, which
++        // sends every G1 to (0,0).
++        if (axis_was_homed(X_AXIS) && axis_was_homed(Y_AXIS)) {
++          LIMIT(target.x, soft_endstop.min.x, soft_endstop.max.x);
++          LIMIT(target.y, soft_endstop.min.y, soft_endstop.max.y);
++        }
+       #else
+         if (TERN1(IS_SCARA, axis_was_homed(X_AXIS) && axis_was_homed(Y_AXIS))) {
+           const float dist_2 = HYPOT2(target.x - offs.x, target.y - offs.y);
+@@ -1754,7 +1762,7 @@ void prepare_line_to_destination() {
+       #endif
+     }
+ 
+-    #if ANY(MORGAN_SCARA, MP_SCARA)
++    #if ANY(MORGAN_SCARA, MP_SCARA) && DISABLED(SCARA_JOINT_HOMING)
+       // Tell the planner the axis is at 0
+       current_position[axis] = 0;
+       sync_plan_position();
+@@ -1952,7 +1960,7 @@ void prepare_line_to_destination() {
+ 
+   void homeaxis(const AxisEnum axis) {
+ 
+-    #if ANY(MORGAN_SCARA, MP_SCARA)
++    #if ANY(MORGAN_SCARA, MP_SCARA) && DISABLED(SCARA_JOINT_HOMING)
+       // Only Z homing (with probe) is permitted
+       if (axis != Z_AXIS) { BUZZ(100, 880); return; }
+     #else
+@@ -2031,7 +2039,13 @@ void prepare_line_to_destination() {
+     //
+     // Fast move towards endstop until triggered
+     //
+-    const float move_length = 1.5f * max_length(TERN(DELTA, Z_AXIS, axis)) * axis_home_dir;
++    #if ALL(MORGAN_SCARA, SCARA_JOINT_HOMING)
++      // Joint homing travels in degrees: limit it to what the joint can really do
++      static constexpr float scara_homing_travel[] = SCARA_HOMING_TRAVEL;
++      const float move_length = (axis <= Y_AXIS ? scara_homing_travel[axis] : 1.5f * max_length(axis)) * axis_home_dir;
++    #else
++      const float move_length = 1.5f * max_length(TERN(DELTA, Z_AXIS, axis)) * axis_home_dir;
++    #endif
+     if (DEBUGGING(LEVELING)) DEBUG_ECHOLNPGM("Home Fast: ", move_length, "mm");
+     do_homing_move(axis, move_length, 0.0, !use_probe_bump);
+ 
+diff --git a/Marlin/src/module/scara.cpp b/Marlin/src/module/scara.cpp
+index 0f00ab5..7a4a887 100644
+--- a/Marlin/src/module/scara.cpp
++++ b/Marlin/src/module/scara.cpp
+@@ -39,6 +39,27 @@
+ 
+ float segments_per_second = DEFAULT_SEGMENTS_PER_SECOND;
+ 
++/**
++ * Plotter SCARA options (see firmware/scara-plotter/README.md)
++ *
++ *  SCARA_ELBOW_RELATIVE  The B axis is the elbow angle (Psi) relative to the
++ *                        upper arm: the elbow motor rides on the upper arm.
++ *                        Without it B is the absolute forearm angle (Psi+Theta),
++ *                        as on a Morgan with both motors at the base.
++ *  SCARA_ELBOW_NEGATIVE  Elbow bends the other way (Psi < 0).
++ *  SCARA_JOINT_HOMING    Home Theta and Psi against real endstops (G28).
++ *  SCARA_THETA_CENTER    Middle of the Theta travel (degrees), see inverse_kinematics.
++ *  SCARA_HOME_PARK       { X, Y } to move to (joint space) at the end of G28.
++ */
++#if ANY(MP_SCARA, SCARA_ELBOW_RELATIVE)
++  #define _SCARA_B_RELATIVE 1
++#endif
++#if ENABLED(SCARA_ELBOW_NEGATIVE)
++  #define _SCARA_ELBOW_SIGN -1.0f
++#else
++  #define _SCARA_ELBOW_SIGN 1.0f
++#endif
++
+ #if ANY(MORGAN_SCARA, MP_SCARA)
+ 
+   static constexpr xy_pos_t scara_offset = { SCARA_OFFSET_X, SCARA_OFFSET_Y };
+@@ -51,8 +72,8 @@ float segments_per_second = DEFAULT_SEGMENTS_PER_SECOND;
+   void forward_kinematics(const_float_t a, const_float_t b) {
+     const float a_sin = sin(RADIANS(a)) * L1,
+                 a_cos = cos(RADIANS(a)) * L1,
+-                b_sin = sin(RADIANS(SUM_TERN(MP_SCARA, b, a))) * L2,
+-                b_cos = cos(RADIANS(SUM_TERN(MP_SCARA, b, a))) * L2;
++                b_sin = sin(RADIANS(SUM_TERN(_SCARA_B_RELATIVE, b, a))) * L2,
++                b_cos = cos(RADIANS(SUM_TERN(_SCARA_B_RELATIVE, b, a))) * L2;
+ 
+     cartes.x = a_cos + b_cos + scara_offset.x;  // theta
+     cartes.y = a_sin + b_sin + scara_offset.y;  // phi
+@@ -113,7 +134,7 @@ float segments_per_second = DEFAULT_SEGMENTS_PER_SECOND;
+ 
+     LIMIT(C2, -1, 1);
+ 
+-    S2 = SQRT(1.0f - sq(C2));
++    S2 = _SCARA_ELBOW_SIGN * SQRT(1.0f - sq(C2));
+ 
+     // Unrotated Arm1 plus rotated Arm2 gives the distance from Center to End
+     SK1 = L1 + L2 * C2;
+@@ -127,7 +148,14 @@ float segments_per_second = DEFAULT_SEGMENTS_PER_SECOND;
+     // Angle of Arm2
+     PSI = ATAN2(S2, C2);
+ 
+-    delta.set(DEGREES(THETA), DEGREES(SUM_TERN(MORGAN_SCARA, PSI, THETA)), raw.z);
++    float theta_deg = DEGREES(THETA);
++    #ifdef SCARA_THETA_CENTER
++      // Keep Theta within +/-180 degrees of the middle of its travel, so the
++      // arm never jumps by 360 degrees when the target crosses the -X axis.
++      theta_deg -= 360.0f * floorf((theta_deg - float(SCARA_THETA_CENTER) + 180.0f) / 360.0f);
++    #endif
++
++    delta.set(theta_deg, DEGREES(PSI) + TERN(SCARA_ELBOW_RELATIVE, 0, theta_deg), raw.z);
+ 
+     /*
+       DEBUG_POS("SCARA IK", raw);
+@@ -292,13 +320,48 @@ float segments_per_second = DEFAULT_SEGMENTS_PER_SECOND;
+ 
+ #endif
+ 
++#if ALL(MORGAN_SCARA, SCARA_JOINT_HOMING)
++
++  /**
++   * Home the two SCARA joints against their endstops, one after the other.
++   * Each homeaxis() runs in joint space (degrees); the final position is
++   * set from X_HOME_POS / Y_HOME_POS, which are the joint angles (degrees)
++   * at which the endstops trigger.
++   */
++  void home_SCARA() {
++    // Start from a known zero joint position, as home_TPARA does
++    current_position.reset();
++    destination.reset();
++    sync_plan_position();
++
++    homeaxis(A_AXIS);   // Shoulder (Theta)
++    homeaxis(B_AXIS);   // Elbow (Psi)
++
++    LOOP_NUM_AXES(i) set_axis_is_at_home((AxisEnum)i);
++    sync_plan_position();
++
++    #ifdef SCARA_HOME_PARK
++      // Leave the endstops with a joint-space move to the park point (middle of the
++      // paper). A straight Cartesian line from the endstop pose could leave the
++      // allowed joint range, so the first move out is always a joint move.
++      static constexpr xy_pos_t park = SCARA_HOME_PARK;
++      destination = current_position;
++      destination.x = park.x;
++      destination.y = park.y;
++      prepare_fast_move_to_destination(homing_feedrate(X_AXIS));
++      planner.synchronize();
++    #endif
++  }
++
++#endif
++
+ void scara_report_positions() {
+   SERIAL_ECHOLNPGM("SCARA Theta:", planner.get_axis_position_degrees(A_AXIS)
+     #if ENABLED(AXEL_TPARA)
+       , "  Phi:", planner.get_axis_position_degrees(B_AXIS)
+       , "  Psi:", planner.get_axis_position_degrees(C_AXIS)
+     #else
+-      , "  Psi" TERN_(MORGAN_SCARA, "+Theta") ":", planner.get_axis_position_degrees(B_AXIS)
++      , "  Psi" TERN_(MORGAN_SCARA, TERN(SCARA_ELBOW_RELATIVE, "", "+Theta")) ":", planner.get_axis_position_degrees(B_AXIS)
+     #endif
+   );
+   SERIAL_EOL();
+diff --git a/Marlin/src/module/scara.h b/Marlin/src/module/scara.h
+index c574b2f..ba3ef6c 100644
+--- a/Marlin/src/module/scara.h
++++ b/Marlin/src/module/scara.h
+@@ -48,6 +48,10 @@ extern float segments_per_second;
+ 
+ #endif
+ 
++#if ALL(MORGAN_SCARA, SCARA_JOINT_HOMING)
++  void home_SCARA();
++#endif
++
+ void inverse_kinematics(const xyz_pos_t &raw);
+ void scara_set_axis_is_at_home(const AxisEnum axis);
+ void scara_report_positions();
